@@ -1,0 +1,736 @@
+---
+title: "STAD and COAD analysis"
+author: "nvolkova"
+date: "Apr 2017"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, echo=F}
+# Ensure your working directory is MMR
+knitr::opts_knit$set(root.dir = '/Users/nvolkova/MMR/')
+```
+
+This is analysis of mutational signatures in COAD and STAD datasets from [ICGC](http://icgc.org) for MMR paper ([Meier, Volkova et al. 2017](https://www.biorxiv.org/content/biorxiv/early/2017/06/13/149153.full.pdf)).
+
+## Get the data and signatures and contributions
+
+Preparation
+
+```{r, message=F, warning=F}
+source('plotting functions/plot_sigs.R')
+source("nmSolve.R")
+source("plotting functions/plot_decomposition.R")
+source('plotting functions/scatterpie.R')
+library(tsne)
+library(NMF)
+library(devtools)
+devtools::install_github("mg14/mg14") # for plotting purposes
+library(mg14)
+library(ggplot2)
+library(reshape2)
+library(VariantAnnotation)
+library(deconstructSigs)
+```
+
+Get COSMIC signatures
+
+```{r, warning=F}
+sp_url <- paste("http://cancer.sanger.ac.uk/cancergenome/assets/",
+                "signatures_probabilities.txt", sep = "")
+cancer_signatures = read.table(sp_url, sep = "\t", header = TRUE)
+cancer_signatures = cancer_signatures[order(cancer_signatures[,1]),]
+types <- as.character(cancer_signatures$Trinucleotide) # trinucleotide classes
+types.full <- as.character(cancer_signatures$Somatic.Mutation.Type) # substitution types
+row.names(cancer_signatures) <- types.full
+cancer_signatures = as.matrix(cancer_signatures[,4:33])
+```
+
+Adjust them from exomes:
+
+```{r, warning=F}
+cancer_signatures_adj <- cancer_signatures
+for (i in 1:ncol(cancer_signatures)) {
+  cancer_signatures_adj[,i] <- cancer_signatures_adj[,i] / tri.counts.genome[types,1] * tri.counts.exome[types,1]
+  cancer_signatures_adj[,i] <- cancer_signatures_adj[,i] / sum(cancer_signatures_adj[,i])
+}
+```
+
+```{r, echo=F, fig.width=10, fig.height=4}
+to.show <- cbind(cancer_signatures[,5], cancer_signatures_adj[,5])
+colnames(to.show) <- c('Sig.5 genome', 'Sig.5 exome')
+plot_sig(to.show)
+```
+
+Prepare human exome counts (regions taken from [Agilent SureSelect V5 Human All Exon](https://earray.chem.agilent.com/suredesign/index.htm), human genome sequence - from hg19 build)
+
+```{r, eval=F, warning=F, message=F}
+ref_genome="BSgenome.Hsapiens.UCSC.hg19"
+library(BSgenome.Hsapiens.UCSC.hg19)
+exome <- read.table("S04380110_Covered.bed",header = FALSE, sep="\t",stringsAsFactors=FALSE, skip=2,quote="")
+a <- getSeq(get(ref_genome))
+a <- a[1:23] # get rid of Y
+gr <- as(seqinfo(a), "GRanges") # turn into GRanges object
+genome(gr) <- "hg19"
+# Get the sequence for well covered exome
+exactexomelist <- list()
+for (j in 1:23) {
+  tmp <- exome[exome$V1==seqlevels(a)[j],]
+  exactexomelist[[j]] <- lapply(1:nrow(tmp), function(i)
+    a[[j]][tmp$V2[i]:tmp$V3[i]])
+}
+```
+
+```{r, echo=F, warning=F, message=F}
+load('exome.RData')
+# nucleotide counts
+exome.bases <- rowSums(sapply(1:23, function(k) rowSums(sapply(exactexomelist[[k]],oligonucleotideFrequency,width=1))))
+ref_genome="BSgenome.Hsapiens.UCSC.hg19"
+library(BSgenome.Hsapiens.UCSC.hg19)
+#exome <- read.table("S04380110_Covered.bed",header = FALSE, sep="\t",stringsAsFactors=FALSE, skip=2,quote="")
+a <- getSeq(get(ref_genome))
+a <- a[1:23] # get rid of Y
+gr <- as(seqinfo(a), "GRanges") # turn into GRanges object
+genome(gr) <- "hg19"
+```
+
+Prepare *C. elegans* counts in order to account for trinucleotide content difference:
+
+```{r, warning=F}
+WBcel235 <- readDNAStringSet("C. elegans data/Caenorhabditis_elegans.WBcel235.dna_sm.toplevel.fa.gz")
+worm.trinucleotides <- colSums(trinucleotideFrequency(WBcel235)[-5,])
+human.trinucleotides <- as.vector(t(tri.counts.genome))
+names(human.trinucleotides) <- row.names(tri.counts.genome)
+trinucleotide.freq.factor <- sapply(unique(types), function(x) {
+  freq.worm <- worm.trinucleotides[x] + worm.trinucleotides[as.character(reverseComplement(DNAString(x)))]
+  return(freq.worm /  human.trinucleotides[x]) # tri.counts.genome is already classified w.r.t. pyrimidine reference
+})
+human.trinucleotides <- as.vector(t(tri.counts.exome)) # / sum(tri.counts.genome))) # counts from "deconstructSigs" package
+names(human.trinucleotides) <- row.names(tri.counts.exome)
+trinucleotide.freq.factor.ex <- sapply(unique(types), function(x) {
+  freq.worm <- worm.trinucleotides[x] + worm.trinucleotides[as.character(reverseComplement(DNAString(x)))]
+  return(freq.worm / human.trinucleotides[x]) # tri.counts.genome is already classified w.r.t. pyrimidine reference
+})
+names(trinucleotide.freq.factor.ex) = names(trinucleotide.freq.factor) <- unique(types)
+```
+
+Visualize trinucleotide differences between C.elegans and human exome:
+
+```{r, echo=F, warning=F, fig.width=10, fig.height=4}
+worm.trinucleotides.32 <- sapply(unique(types), function(x) {
+  return(worm.trinucleotides[x] + worm.trinucleotides[as.character(reverseComplement(DNAString(x)))])
+})
+names(worm.trinucleotides.32) <- unique(types)
+types.order <- c(rep(types[1:16],3),rep(types[49:64],3))
+# human.trinucleotides in deconstructSigs
+
+df = data.frame(worm.counts=c(worm.trinucleotides.32[types.order]),
+                human.counts=c(t(tri.counts.exome)[1,][types.order]),
+                Type = rep(c('C>A', 'C>G', 'C>T', 'T>A', 'T>C', 'T>G'), each = 16),
+                Trinucleotide = c(types.order))
+df$worm.counts <- df$worm.counts / sum(df$worm.counts[33:64])
+df$human.counts = df$human.counts / sum(df$human.counts[33:64])
+df$human.counts = -df$human.counts
+
+df <- rbind(df, df[,c(2,1,3,4)])
+df[97:192,1] <- -df[97:192,1]
+df <- df[,-2]
+df$Species <- c(rep("C. elegans",96), rep("Homo sapiens exome",96))
+colnames(df) <- c('Fraction', 'Type', 'Trinucleotide', 'Species')
+rownames(df) = NULL
+
+p <- ggplot(data = df,aes(x = Trinucleotide,y=Fraction,fill=Species)) + 
+  geom_bar(stat="identity",colour="black",position = "dodge",size=0.1,width = 0.5) + 
+  scale_fill_manual(values = c("darkred","lightblue")) +
+  facet_grid(Species ~ Type, scales = "free") +
+  scale_x_discrete(labels=types.order) +
+  theme_bw() + coord_cartesian() +
+  theme(text = element_text(family='ArialMT'),
+        axis.text=element_text(size=12),
+        axis.text.x = element_text(angle = 90, vjust = 0.4,size=6),
+        strip.text = element_text(size = 12),
+        axis.title=element_text(size=12,face="bold"),
+        legend.text = element_text(size=12),
+        legend.title = element_text(size=24,face="bold"),
+        panel.grid = element_blank(),
+        strip.background = element_rect(colour='white', fill='white'),
+        panel.border = element_rect(colour='black', size=0.1),
+        panel.spacing = unit(0.01,'lines')) +
+  guides(fill=F)
+p
+```
+
+## *C. elegans* MMR mutational patterns
+Upload the mutation counts from *C. elegans* samples and calculate *C. elegans* signatures using additive Poisson model:
+
+$Y_{i,j} = Pois(\lambda_{i,j})$,
+
+$E[Y_{i,j}] = N \cdot (\beta_{j,b} + X_{g_{1}} \beta_{j,g_{1}} + X_{g_{2}} \beta_{j,g_{2}} + X_{g_{1}:g_{2}} \beta_{j,g_{1}:g_{2}})$, 
+
+where $β_{j,\cdot} \ge 0$ - effects, $N$ - generation number, $g_{1}$, $g_{2}$ - genetic backgrounds, $b$ - background contribution, $X_{...} \in {0,1}$ indicates the presence of particular factors. 
+
+```{r, warning=F, message=F, fig.width=10, fig.height=6, results='hide'}
+load("C. elegans data/Learned_signatures.RData")
+# Contains mutation counts matrix mut_mat and exposure matrix small.X for the samples from C. elegans MMR and pole-4;pms-2 experiments.
+learned.sigs <- nmSolve(t(mut_mat),small.X,maxIter=10000, tol = 1e-06, div.err = 1e-10)
+for (i in 1:nrow(learned.sigs)) {
+  learned.sigs[i,] <- learned.sigs[i,] / sum(learned.sigs[i,])
+}
+```
+
+```{r, warning=F, message=F, fig.width=10, fig.height=6}
+plot_sig(t(learned.sigs))
+```
+
+Humanize the signatures:
+
+```{r, warning=F, fig.width=10, fig.height=6}
+learned.sigs.exome <- learned.sigs
+for (i in 1:nrow(learned.sigs.exome)) {
+  learned.sigs.exome[i,] <- learned.sigs.exome[i,] / trinucleotide.freq.factor.ex[types]
+}
+plot_sig(t(learned.sigs.exome))
+```
+
+## ICGC data
+
+ICGC data for COAD and STAD dataset was downloaded from [ICGC DCC](http://dcc.icgc.org) using COAD-US and STAD-US projects with WXS analysis type, respectively. The vcf file describing all somatic mutations across ICGC dataset is stored [here](https://dcc.icgc.org/releases/current/Summary) under the 'simple_somatic_mutation.aggregated.vcf.gz' name.
+
+```{r, eval=F, warning=F}
+# download and read huge aggregated variant file
+big.vcf <- readVcf("simple_somatic_mutation.aggregated.vcf")
+mutations.COAD <- read.table(file="COAD/simple_somatic_mutation.open.tsv",sep="\t",header=T)
+mutations.STAD <- read.table(file="STAD/simple_somatic_mutation.open.tsv",sep="\t",header=T)
+per_sample_list <- sapply(unique(mutations.COAD$icgc_donor_id), function(donor) {
+  unique(mutations.COAD$icgc_mutation_id[mutations.COAD$icgc_donor_id==donor])
+})
+names(per_sample_list) <- unique(mutations.COAD$icgc_donor_id)
+vcf_list_COAD <- sapply(per_sample_list, function(x) big.vcf[as.character(x)])
+names(vcf_list_COAD) <- names(per_sample_list)
+vcf_list_COAD <- sapply(vcf_list_COAD, rowRanges)
+for (sample in names(vcf_list_COAD)) {
+  seqlevels(vcf_list_COAD[[sample]]) <- seqnames(get(ref_genome))[c(as.numeric(seqlevels(vcf_list_COAD[[sample]])[1:22]),25,23,24)]
+  vcf_list_COAD[[sample]] <- vcf_list_COAD[[sample]][seqnames(vcf_list_COAD[[sample]])!="chrM"]
+  vcf_list_COAD[[sample]] <- vcf_list_COAD[[sample]][seqnames(vcf_list_COAD[[sample]])!="chrY"]
+}
+per_sample_list <- sapply(unique(mutations.STAD$icgc_donor_id), function(donor) {
+  unique(mutations.STAD$icgc_mutation_id[mutations.STAD$icgc_donor_id==donor])
+})
+names(per_sample_list) <- unique(mutations.STAD$icgc_donor_id)
+vcf_list_STAD <- sapply(per_sample_list, function(x) big.vcf[as.character(x)])
+names(vcf_list_STAD) <- names(per_sample_list)
+vcf_list_STAD <- sapply(vcf_list_STAD, rowRanges)
+for (sample in names(vcf_list_STAD)) {
+  seqlevels(vcf_list_STAD[[sample]]) <- seqnames(get(ref_genome))[c(as.numeric(seqlevels(vcf_list_STAD[[sample]])[1:22]),25,23,24)]
+  vcf_list_STAD[[sample]] <- vcf_list_STAD[[sample]][seqnames(vcf_list_STAD[[sample]])!="chrM"]
+  vcf_list_STAD[[sample]] <- vcf_list_STAD[[sample]][seqnames(vcf_list_STAD[[sample]])!="chrY"]
+}
+
+all.types <- c(types.full,"INS_A","INS_C","INS_G","INS_T","DEL_A","DEL_C","DEL_G","DEL_T")
+sub_list <- sapply(vcf_list_COAD, function(vcf) {
+  vcf[width(vcf$REF)==1 & width(unlist(vcf$ALT))==1,]
+})
+del_list <- sapply(vcf_list_COAD, function(vcf) {
+  vcf[width(vcf$REF)==2 & width(unlist(vcf$ALT))==1,]
+})
+ins_list <- sapply(vcf_list_COAD, function(vcf) {
+  vcf[width(vcf$REF)==1 & width(unlist(vcf$ALT))==2,]
+})
+COAD.mutation.counts = matrix(0,nrow=length(vcf_list_COAD),ncol=length(all.types),dimnames=list(names(vcf_list_COAD),all.types))
+for (i in 1:nrow(COAD.mutation.counts)) {
+  type_context = type_context(sub_list[[i]], ref_genome)
+  counts <- table(type_context)
+  for (a in rownames(counts)) {
+    tmp = unlist(strsplit(a,split="[>]"))
+    inds <- colnames(counts)[counts[a,]>0]
+    columns = as.vector(sapply(inds, function(x) paste(substr(x,1,1),"[",a,"]",substr(x,nchar(x),nchar(x)),sep="")))
+    COAD.mutation.counts[i,columns] = counts[a,inds]
+  }
+  COAD.mutation.counts[i,97:100] <- table(substr(unlist(ins_list[[i]]$ALT),2,2))[c("A","C","G","T")]
+  COAD.mutation.counts[i,101:104] <- table(substr(del_list[[i]]$REF,2,2))[c("A","C","G","T")]
+  print(i)
+}
+COAD.mutation.counts[is.na(COAD.mutation.counts)] <- 0
+
+sub_list <- sapply(vcf_list_STAD, function(vcf) {
+  vcf[width(vcf$REF)==1 & width(unlist(vcf$ALT))==1,]
+})
+del_list <- sapply(vcf_list_STAD, function(vcf) {
+  vcf[width(vcf$REF)==2 & width(unlist(vcf$ALT))==1,]
+})
+ins_list <- sapply(vcf_list_STAD, function(vcf) {
+  vcf[width(vcf$REF)==1 & width(unlist(vcf$ALT))==2,]
+})
+STAD.mutation.counts = matrix(0,nrow=length(vcf_list_STAD),ncol=length(all.types),dimnames=list(names(vcf_list_STAD),all.types))
+for (i in 1:nrow(STAD.mutation.counts)) {
+  type_context = type_context(sub_list[[i]], ref_genome)
+  counts <- table(type_context)
+  for (a in rownames(counts)) {
+    tmp = unlist(strsplit(a,split="[>]"))
+    inds <- colnames(counts)[counts[a,]>0]
+    columns = as.vector(sapply(inds, function(x) paste(substr(x,1,1),"[",a,"]",substr(x,nchar(x),nchar(x)),sep="")))
+    STAD.mutation.counts[i,columns] = counts[a,inds]
+  }
+  STAD.mutation.counts[i,97:100] <- table(substr(unlist(ins_list[[i]]$ALT),2,2))[c("A","C","G","T")]
+  STAD.mutation.counts[i,101:104] <- table(substr(del_list[[i]]$REF,2,2))[c("A","C","G","T")]
+  print(i)
+}
+STAD.mutation.counts[is.na(STAD.mutation.counts)] <- 0
+```
+
+Or just upload the prepared data:
+
+```{r, warning=F}
+load("ICGC data/profiles_and_decomposition.RData")
+```
+
+# Signature extraction
+
+Signature extraction from the whole set is performed via Brunet version non-negative matrix factorization using NMF package. The number of signatures is chosen as the number of signatures where both residual sum of squares and Akakike Information Criterion values stabilize.
+
+```{r, echo=F, warning=F}
+divergence <- function (a,b) {
+  return (a * log ( (a+.Machine$double.eps)/(b + .Machine$double.eps)) - a + b)
+}
+mm <- rbind(COAD.mutation.counts,STAD.mutation.counts)
+mut_mat = t(mm) + 0.0001
+rss <- NULL; likelihoods <- NULL; divergences <- NULL
+for (r in 2:12) {
+  res <- NMF::nmf(x=mut_mat,rank=r,seed=123456,method='brunet')
+  sigs <- NMF::basis(res)
+  cont <- NMF::coef(res)
+  rss <- c(rss, sum((t(mm) - sigs%*%cont)**2))
+  likelihoods = c(likelihoods,sum(dpois(x=t(mm),lambda=sigs%*%cont,log=T)))
+  divergences <- c(divergences,sum(divergence(t(mm),sigs%*%cont)))
+}
+AIC = 2*c(2:12)*(ncol(mm) + nrow(mm)) - 2*likelihoods
+```
+
+Plot AIC:
+
+```{r, warning=F, fig.width=6, fig.height=3}
+df = data.frame(rank=2:12,AIC)
+ggplot(df,aes(x=rank,y=AIC)) + geom_point() + 
+  ggtitle("AIC for selecting the number of signatures") + 
+  geom_hline(yintercept = AIC[7],linetype = "longdash",colour="red")
+```
+
+Now plot RSS per rank:
+
+```{r, warning=F, fig.width=6, fig.height=3}
+df = data.frame(rank=2:12,rss)
+ggplot(df,aes(x=rank,y=rss)) + geom_point() + 
+  ggtitle("RSS for selecting the number of signatures") + 
+  geom_hline(yintercept = rss[7],linetype = "longdash",colour="red")
+```
+
+This is how the final set of signatures looks like:
+
+```{r, warning=F, fig.width=10, fig.height=8}
+res <- NMF::nmf(x=mut_mat,rank=8,seed=123456,method='brunet')
+sigs <- NMF::basis(res)
+sigs <- sigs[,c(8,1,2,5,4,7,3,6)] # Reorder the signatures
+decomposition <- t(NMF::coef(res))
+decomposition <- decomposition[,c(8,1,2,5,4,7,3,6)]
+colnames(sigs) <- c("Clock-1", "Clock-2", "POLE", "17-like", "MMR-1", "MMR-2", "MMR-3", "SNP")
+colnames(decomposition) <- colnames(sigs)
+for (i in 1:nrow(decomposition))
+   decomposition[i,] = decomposition[i,]/sum(decomposition[i,])
+plot_sig_104(sigs,size=12)
+```
+
+Signatures are assigned as follows: Clock-1 (5meC), Clock-2 (+APOBEC), POLE, 17-like, MMR-1 (20), MMR-2 (15), MMR-3 (21), MMR-4 (unknown).
+
+Get microsatellite stability/instability (MSS/MSI status) from UCSC (or rather the Cancer Genome Atlas Clinical Explorer):
+
+```{r, warning=F}
+icgc.coad <- rownames(COAD.mutation.counts)
+icgc.stad <- rownames(STAD.mutation.counts)
+coad <- read.delim('ICGC data/COAD/donor.tsv',header=T)
+stad <- read.delim('ICGC data/STAD/donor.tsv',header=T)
+tcga.coad <- as.character(coad$submitted_donor_id[match(icgc.coad, coad$icgc_donor_id)])
+tcga.stad <- as.character(stad$submitted_donor_id[match(icgc.stad, stad$icgc_donor_id)])
+
+mss_coadread <- read.delim('ICGC data/COAD/COADREAD_2015-04-02_ClinicalParameters.txt',header=T)
+mss_stad <- read.delim('ICGC data/STAD/STAD_2015-04-02_ClinicalParameters.txt',header=T)
+mmr.coad <- icgc.coad[match(intersect(mss_coadread$SampleCode[mss_coadread$MSIstatus=='MSI-H'], tcga.coad),tcga.coad)]
+mmr.stad <- icgc.stad[match(intersect(mss_stad$SampleCode[mss_stad$MSIstatus=='MSI-H'], tcga.stad),tcga.stad)]
+mmr.ucsc <- c(mmr.stad, mmr.coad)
+```
+
+To assess the distribution of signatures in the data, we generate tSNE plot based on cosine similarity between sample profiles. Circle sizes reflect number of mutations, black rim - microsatellite instability (MSI high), coloured sectors correspond to relative contributions of different signatures. Note that all MSI samples group in one cluster across both datasets.
+
+```{r, echo=F, message=FALSE, warning=FALSE, errors = FALSE}
+data <- rbind(COAD.mutation.counts, STAD.mutation.counts)
+w <- which(rowSums(data)>0)
+data <- data[w,]
+cosdist <- function(x,y) {
+	x0 <- x/sum(x)
+	y0 <- y/sum(y)
+	x0 %*% y0 / sqrt(x0%*%x0)/sqrt(y0%*%y0)
+}
+D <- as.dist(sapply(1:nrow(data), function(i) sapply(1:nrow(data), function(j) 1-cosdist(data[i,],data[j,]) )))
+set.seed(1)
+t <- tsne(D)
+MMR = intersect(rownames(data), mmr.ucsc)
+col <- c(RColorBrewer::brewer.pal(8,"Set1")[c(1:2,7:8,3:5)],'darkgrey')
+m <- rownames(data) %in% MMR
+```
+
+Visualize the similarity map:
+
+```{r, message=FALSE, warning=FALSE, errors = FALSE, echo=F}
+# Plot everything
+o1 <- order(rowSums(data[!m,]),decreasing = T)
+o2 <- order(rowSums(data[m,]),decreasing = T)
+par(bty="n", mar=c(0,0,0,0))
+plot(NA,NA, xlab="", ylab="", xlim=c(-20,20), ylim=c(-35,35), xaxt="n", yaxt="n")
+corr_scatterpie(t[!m,1][o1], t[!m,2][o1], p=decomposition[w,][!m,][o1,], r=sqrt(rowSums(data)[!m][o1])/75, labels=NA, col=col, lty=0, circles=TRUE, lwd.circle=rep(0.01,sum(!m)),lty.circle=rep(1,sum(!m)), add=TRUE, col.circle = 'white')
+corr_scatterpie(t[m,1][o2], t[m,2][o2], p=decomposition[w,][m,][o2,], r=sqrt(rowSums(data)[m][o2])/75, labels=NA, col=col, lty=0, circles=TRUE, lwd.circle=rep(2.5,sum(m)), lty.circle=rep(1,sum(m)), add=TRUE, col.circle = 'black')
+par(cex=0.66)
+mg14:::.pie(x0=10, y0=27, x=matrix(rep(1,8), nrow=1), r=sqrt(10000)/75, labels=colnames(decomposition), col=col, lty=0, circles=TRUE, add=TRUE)
+u <- par("usr")
+pr <- (u[2]-u[1])/(u[4]-u[3])
+fr <- par("pin")[1]/par("pin")[2]
+for(i in c(1,10,100,1000,10000)){
+	polygon(20 + cos(seq(0,2*pi, l=100)) * sqrt(i)/75, 25+(1+sin(seq(0,2*pi, l=100))) * sqrt(i)/75 / pr * fr, col=NA)
+  if (i>10) text(20, 25 + 2*sqrt(i)/75 / pr * fr + 0.3,labels = as.character(i),cex=0.8)
+}
+polygon(20 + cos(seq(0,2*pi, l=100)) * sqrt(i)/75, 15+(1+sin(seq(0,2*pi, l=100))) * sqrt(i)/75 / pr * fr, lwd=2.5, col=NA)
+text(x = 20,y=24,labels = "Number of mutations")
+text(x = 20,y=13,labels = "MSI-H status")
+```
+
+## MMR
+
+Let's plot signature decomposition for MSI samples in both datasets:
+
+```{r, warning=F, echo=F, fig.width=10, fig.height=6}
+p2 <- plot_decomposition(decomposition,mm,intnames=intersect(mmr.ucsc,rownames(STAD.mutation.counts)),col=col) + ggtitle("STAD MSI samples")
+p1 <- plot_decomposition(decomposition,mm,intnames=intersect(mmr.ucsc,rownames(COAD.mutation.counts)),col=col) + ggtitle("COAD MSI samples")
+multiplot(p1,p2)
+```
+
+Association with MSI status: calculate P-values for signature contributions, absolute number of mutations assigned to various signatures, and amount if 1bp indels compared with MSI status.
+
+```{r, warning=F}
+clean_decompositions <- decomposition
+clean_decompositions[clean_decompositions<0.05] <- 0 # Omit the contributions smaller that 5% - accuracy of decomposition is not perfect, and these numbers will spoil the analysis for highly mutated samples
+new.cont.mat = t(clean_decompositions)
+for (y in colnames(new.cont.mat))
+  new.cont.mat[,y] = new.cont.mat[,y] * rowSums(mm)[y]
+pvals <- NULL
+for (i in 1:8)
+{
+  pvals <- c(pvals, wilcox.test(clean_decompositions[mmr.ucsc,i], clean_decompositions[setdiff(rownames(mm),mmr.ucsc),i], paired=F, alternative='greater')$p.value)
+}
+for (i in 1:8)
+{
+  pvals <- c(pvals, wilcox.test(new.cont.mat[i,mmr.ucsc], new.cont.mat[i,setdiff(rownames(mm),mmr.ucsc)], paired=F, alternative='greater')$p.value)
+}
+names(pvals) = rep(colnames(clean_decompositions),2)
+pvals <- c(pvals,
+           wilcox.test(rowSums(mm[mmr.ucsc,97:104]), rowSums(mm[setdiff(rownames(mm),mmr.ucsc),97:104]), paired=F, alternative='greater')$p.value)
+names(pvals)[17] <- 'indels'
+print(p.adjust(pvals,method = 'bonf')) # Take 0.01 as significance threshold (>10 tests)
+```
+
+MMR-1 seems to be a good indicator of MSI status. Calculate AUC for MMR-1:
+
+```{r, warning=F, message=F}
+library(pROC)
+mmr.type <- sapply(rownames(mm), function(x) {
+  if (x %in% mmr.ucsc) return("MSI")
+  else return("MSS")
+})
+roc(response = factor(mmr.type), predictor = decomposition[,5])
+roc(response = factor(mmr.type), predictor = (rowSums(mm[,97:104])))
+ci(response = factor(mmr.type), predictor = decomposition[,5])
+ci(response = factor(mmr.type), predictor = (rowSums(mm[,97:104])))
+```
+
+Boxplots for signature MMR-1, MMR-2, MMR-3 contribution vs MSI status:
+
+```{r, warning=F, echo=F, results='hide'}
+df = data.frame(sample = rownames(mm), mmr.type, decomposition[,5:7])
+colnames(df)[3:5] = colnames(decomposition)[5:7]
+df = melt(df)
+```
+```{r,fig.width=6, fig.height=3, echo=F, warning=F}
+p1 <- ggplot(df, aes(x=mmr.type,y=value,fill=variable)) + geom_boxplot(width=0.4,size=0.1,outlier.size=0.5) +
+  facet_grid(. ~ variable) + scale_fill_manual(values=col[5:7]) +
+  ylab("Relative contribution") + xlab("") + guides(fill=F) + theme_bw() +
+  theme(text = element_text(family='ArialMT'),
+        strip.text.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        panel.grid = element_blank(),
+        panel.border = element_rect(size = 0.1),
+        strip.background = element_blank())
+p1
+```
+
+Boxplot for 1-bp indels vs MSI status:
+
+```{r, warning=F, echo=F, fig.width=4, fig.height=2}
+df = data.frame(indels = rowSums(mm[,97:104]), sample = rownames(mm), mmr.type)
+p <- ggplot(df, aes(x=mmr.type,y=indels)) + geom_boxplot(width=0.4, size = 0.1, outlier.size = 0.5) + theme_bw() +
+  ylab("Number of \n 1 bp indels") + xlab("") + guides(fill=F) +
+  theme(text = element_text(family='ArialMT'),
+        strip.text.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        panel.grid = element_blank(),
+        panel.border = element_rect(size = 0.1),
+        strip.background = element_blank())
+p
+```
+
+Relative contributions for MMR deficient samples:
+```{r, warning=F, echo=F, fig.width=10, fig.height=6}
+p1 <- plot_decomposition(decomposition,decomposition,intersect(rownames(COAD.mutation.counts),mmr.ucsc),col,axis.size=20)
+p2 <- plot_decomposition(decomposition,decomposition,intersect(rownames(STAD.mutation.counts),mmr.ucsc),col,size=4, axis.size=20)
+multiplot(p1,p2)
+```
+
+Absolute contributions for all the samples in both datasets:
+
+```{r, warning=F, echo=F, fig.width=10, fig.height=6}
+p1 <- plot_decomposition(decomposition,mm,rownames(COAD.mutation.counts),col,size=2, axis.size=14)
+p2 <- plot_decomposition(decomposition,mm,rownames(STAD.mutation.counts),col, size=2, axis.size=14)
+multiplot(p1,p2)
+```
+
+## Amount of indels 
+
+Plot the amount of indels per sample in both cohorts:
+
+```{r, warning=F, echo=F, fig.width=10, fig.height=4}
+indels <- rowSums(mm[,97:104])
+cohort <- ifelse(rownames(mm)[indels>10] %in% rownames(COAD.mutation.counts),"COAD","STAD")
+df <- data.frame(indelcount=indels[indels>10],cohort,sample=rownames(mm)[indels>10])
+ggplot(data=df, aes(x=factor(sample,levels=names(sort(indels))),y=indelcount,fill=cohort)) + geom_bar(stat="identity") + facet_grid(. ~ cohort,scales = "free")
+```
+
+Lets find all the homopolymers of length 4 to 55 in human exome.
+
+1. Create homopolymer library
+
+```{r, eval=F, warning=F}
+homopolymer_pool_length_4to55 <- lapply(seq(4,55),function(y) lapply(c("A","C","G","T"),function(x)
+  if (x=="A") {paste0("B",paste(rep(x,y),collapse=""),"B")
+  }
+  else
+    if (x=="T") {paste0("V",paste(rep(x,y),collapse=""),"V")
+    }
+  else
+    if (x=="G") {paste0("H",paste(rep(x,y),collapse=""),"H")
+    }
+  else
+    if (x=="C") {paste0("D",paste(rep(x,y),collapse=""),"D")
+    }
+))
+homopolymers <- unlist(homopolymer_pool_length_4to55)
+pattern_all <- DNAStringSet(homopolymers)
+```
+
+2. Find all homopolymers in the genome:
+
+```{r, eval=F, warning=F}
+hits_all <- list()
+for (i in 1:23) {
+  maskMotif(a[[i]], "N") -> masked
+  hits_all[[i]] <- sapply(pattern_all, 
+                          matchPattern, 
+                          subject=masked,
+                          fixed=F)
+}
+lengths <- lapply(hits_all, function(l) sapply(l,length))
+hits_all <- lapply(1:length(hits_all), function(i) hits_all[[i]][which(lengths[[i]]>0)])
+nonzero_lengths <- lapply(hits_all, function(chr) sapply(chr, length)) # numbers of homopolymers on each chromosome for non empty classes only
+names(hits_all) <- seqlevels(gr)
+```
+
+3. Create a dataframe withtheir coordinates and contexts:
+
+```{r, eval=F, warning=F}
+sites.gr <- lapply(1:23, function(i) do.call("c",lapply(lapply(hits_all[[i]], as, "IRanges"),
+                                                        GRanges,seqnames=names(hits_all)[i])))
+for (j in 1:23) {
+  sites.gr[[j]]$pattern.searched <- rep(as.character(pattern_all), lengths[[j]])
+  sites.gr[[j]]$motif.found <- unlist(lapply(hits_all[[j]], as.character))
+  sites.gr[[j]]$pattern.length <- unlist(lapply(hits_all[[j]], width)) # includes the two flanking bases
+  sites.gr[[j]]$homopolymer.length <- (sites.gr[[j]]$pattern.length)-2 # remove 2 bases, 5' and 3' are not part of homopolymer
+}
+sites.gr_all <- do.call("c",sites.gr)
+genome(sites.gr_all) <- "hg19" # add genome info
+```
+
+4. Intersect with well-covereed part of the human exome:
+
+```{r, eval=F, warning=F}
+exomranges <- GRanges(seqnames=exome$V1,ranges=IRanges(start = exome$V2,end=exome$V3))
+hits <- findOverlaps(exomranges,sites.gr_all,minoverlap = 2)
+sites.gr_all <- sites.gr_all[sort(unique(subjectHits(hits)))]
+all_sites <- as.data.frame(sites.gr_all) # make a data frame
+```
+
+4. Check the amount of 1bp indels in homopolymers in MSI samples in both cohorts:
+
+```{r, warning=F}
+# Upload the vcf files for both cohorts
+load("ICGC data/STAD/vcf_list_STAD.RData")
+indel_list_STAD <- sapply(vcf_list_STAD, function(vcf) vcf[abs(width(vcf$REF)-width(unlist(vcf$ALT)))==1 & (width(vcf$REF)==1 | width(unlist(vcf$ALT))==1),])
+dims <- sapply(indel_list_STAD,length,simplify = T)
+load("ICGC data/COAD/vcf_list_COAD.RData")
+indel_list_COAD <- sapply(vcf_list_COAD, function(vcf) vcf[abs(width(vcf$REF)-width(unlist(vcf$ALT)))==1 & (width(vcf$REF)==1 | width(unlist(vcf$ALT))==1),])
+dims <- sapply(indel_list_COAD,length,simplify = T)
+for (k in 1:length(indel_list_STAD)) {
+  genome(indel_list_STAD[[k]]) <- "hg19"
+  indel_list_STAD[[k]]$insertion <- width(unlist(indel_list_STAD[[k]]$ALT))-1
+  indel_list_STAD[[k]]$deletion <- width(indel_list_STAD[[k]]$REF)-1
+}
+for (k in 1:length(indel_list_COAD)) {
+  genome(indel_list_COAD[[k]]) <- "hg19"
+  indel_list_COAD[[k]]$insertion <- width(unlist(indel_list_COAD[[k]]$ALT))-1
+  indel_list_COAD[[k]]$deletion <- width(indel_list_COAD[[k]]$REF)-1
+}
+indels.in.hp.stad <- vector("numeric",length(indel_list_STAD))
+for (i in 1:length(indel_list_STAD)) {
+  x <- subsetByOverlaps(indel_list_STAD[[i]],sites.gr_all)
+  indels.in.hp.stad[i] <- nrow(as.data.frame(x))
+}
+names(indels.in.hp.stad) <- names(indel_list_STAD)
+indels.in.hp.coad <- vector("numeric",length(indel_list_COAD))
+for (i in 1:length(indel_list_COAD)) {
+  x <- subsetByOverlaps(indel_list_COAD[[i]],sites.gr_all)
+  indels.in.hp.coad[i] <- nrow(as.data.frame(x))
+}
+names(indels.in.hp.coad) <- names(indel_list_COAD)
+```
+
+Plot indels in homopolymers:
+
+```{r, echo=F, warning=F, echo=F,  fig.width=10, fig.height=4}
+df <- data.frame(sample=rownames(STAD.mutation.counts), Non.HP.indels = rowSums(STAD.mutation.counts[,97:104])-indels.in.hp.stad[rownames(STAD.mutation.counts)], HP.indels = indels.in.hp.stad[rownames(STAD.mutation.counts)])
+df = melt(df,id.vars="sample")
+p1 <- ggplot(data=df[df$sample %in% mmr.ucsc,], aes(x=factor(sample, levels = df$sample[order(rowSums(STAD.mutation.counts[,97:104]), decreasing = F)]),y=value,fill=variable)) + geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90,vjust=0.5, hjust=0, size=6, family='ArialMT'),
+        legend.title=element_blank(),
+        axis.title = element_text(size=8, family='ArialMT'),
+        legend.text = element_text(size=8,family='ArialMT'),
+        title = element_text(size=10, family='ArialMT', face='bold')) +
+  scale_fill_discrete(labels=c("Indels not in HP","Indels in HP")) + xlab("MSI sample") + 
+  ylab("1bp indel counts") + ggtitle("1 bp indels in homopolymers in STAD samples with MSI")
+p1
+```
+```{r, echo=F, warning=F, echo=F, fig.width=10, fig.height=4}
+df <- data.frame(sample=rownames(COAD.mutation.counts), Non.HP.indels = rowSums(COAD.mutation.counts[,97:104])-indels.in.hp.coad[rownames(COAD.mutation.counts)], HP.indels = indels.in.hp.coad[rownames(COAD.mutation.counts)])
+df = melt(df,id.vars="sample")
+p2 <- ggplot(data=df[df$sample %in% mmr.ucsc,], aes(x=factor(sample, levels = df$sample[order(rowSums(COAD.mutation.counts[,97:104]), decreasing = F)]),y=value,fill=variable)) + geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90,vjust=0.5, hjust=0, size=7, family='ArialMT'),
+        legend.title=element_blank(),
+        axis.title = element_text(size=8, family='ArialMT'),
+        legend.text = element_text(size=8,family='ArialMT'),
+        title = element_text(size=10, family='ArialMT', face='bold')) + 
+  scale_fill_discrete(labels=c("Indels not in HP","Indels in HP")) + xlab("MSI sample") + 
+  ylab("1bp indel counts") + ggtitle("1 bp indels in homopolymers in COAD samples with MSI")
+p2
+```
+
+## More about signature contributions
+
+Same boxplots for realtive contributions in MSI and MSS samples for all signatures simultaneously:
+
+```{r, warning=F, echo=F, fig.width=10, fig.height=3}
+mmr.type <- ifelse(rownames(mm) %in% mmr.ucsc, "MSI", "MSS")
+df = data.frame(decomposition,mmr.type, sample = rownames(mm))
+df2 <- melt(df,id.vars = c("mmr.type","sample"))
+ggplot(data=df2, aes(x=factor(mmr.type),y=value,fill=variable)) + geom_boxplot() + facet_grid(. ~ variable,scales = "free")
+```
+
+Absolute contributions:
+
+```{r, warning=F, echo=F, fig.width=10, fig.height=3}
+mmr.type <- ifelse(rownames(mm) %in% mmr.ucsc, "MSI", "MSS")
+df = data.frame(log(t(round(new.cont.mat))),mmr.type, sample = rownames(mm))
+df2 <- melt(df,id.vars = c("mmr.type","sample"))
+ggplot(data=df2, aes(x=factor(mmr.type),y=value,fill=variable)) + geom_boxplot() + facet_grid(. ~ variable,scales = "free")
+```
+
+## Similarities
+
+We calculate cosine similarities between COSMIC signatures and de novo signature set; and also between C.elegans signatures and all if the abovementioned. Cosine similarity score measures the cosine of an angle between two vectors: 
+
+$Sim(a,b) = \frac{<a,b>}{||a||*||b||}$
+
+```{r}
+cosine <- function(x,y) {
+  x %*% y / sqrt(sum(x**2)) / sqrt(sum(y**2))
+}
+```
+
+The higher the similarity, the closer the vectors are to each other.
+
+Similarities between de novo signatures and *C. elegans* derived *mlh-1*, *pms-2* and *pole-4;pms-2* mutational patterns:
+
+```{r, warning=F, echo=F}
+tmp <- matrix(0,nrow=8,ncol=3,dimnames=list(colnames(sigs),rownames(learned.sigs)[c(2,3,5)]))
+for (i in c(1:8)) 
+  for (j in c(1:3)) {
+    tmp[i,j] <- round(cosine(sigs[1:96,i],learned.sigs.exome[j,1:96]),2)
+  }
+print(tmp)
+```
+
+Similarities between de novo signatures and COSMIC cancer signatures:
+
+```{r, warning=F, echo=F}
+tmp <- matrix(0,nrow=8,ncol=30,dimnames=list(colnames(sigs),colnames(cancer_signatures)))
+for (i in c(1:8)) 
+  for (j in 1:30) {
+    tmp[i,j] <- round(cosine(sigs[1:96,i],cancer_signatures_adj[1:96,j]),2)
+  }
+print(tmp)
+```
+
+## Age correlation
+
+Check if contribution of any signature correlates with age (answer - no).
+
+Correlation with relative contributions: 
+
+```{r, warning=F, echo=F}
+donorinfo <- rbind(read.delim("ICGC data/COAD/donor.tsv"),read.delim("ICGC data/STAD/donor.tsv"))
+tmp <- vector("numeric",8)
+for (i in 1:8)
+  tmp[i] <- (cor(donorinfo$donor_age_at_diagnosis[match(rownames(mm)[-c( 232, 484, 494)],donorinfo$icgc_donor_id)],decomposition[-c(232,484,494),i],method='spearman'))
+names(tmp) <- colnames(sigs)
+print(tmp)
+```
+
+Correlation with absolute contributions: 
+
+```{r, warning=F, echo=F}
+tmp <- vector("numeric",8)
+for (i in 1:8)
+  tmp[i] <- (cor(donorinfo$donor_age_at_diagnosis[match(rownames(mm)[-c( 232, 484, 494)],donorinfo$icgc_donor_id)],new.cont.mat[i,-c(232,484,494)],method='spearman'))
+names(tmp) <- colnames(sigs)
+print(tmp)
+```
+
+## Average profiles
+
+Plot averaged profiles of MSI samples in COAD and STAD datasets. Their cosine similarity shows that they are nearly identical.
+
+```{r, warning=F, echo=F, fig.width=10, fig.height=6}
+p1 <- plot_profiles_104(t(mm[intersect(rownames(STAD.mutation.counts),mmr.ucsc),]), boxplot = T, normalize = T, size=14)
+p2 <- plot_profiles_104(t(mm[intersect(rownames(COAD.mutation.counts),mmr.ucsc),]), boxplot = T, normalize = T, size=14)
+multiplot(p1,p2)
+print(cosine(colMeans(mm[intersect(rownames(STAD.mutation.counts),mmr.ucsc),]),colMeans(mm[intersect(rownames(COAD.mutation.counts),mmr.ucsc),])))
+```
