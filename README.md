@@ -4,10 +4,11 @@ Mismatch repair signature analysis in *C. elegans* and ICGC colorectal and stoma
 *C. elegans* data: contains .RData files with count and design matrices for MMR experiment on C. elegans, raw data available at the NCBI Sequence Read Archive [SRA](http://www.ncbi.nlm.nih.gov/sra) under accession number SRP020555. Requires *C. elegans* WB235cel genome, instructions in corresponding README file.
 
 **ICGC data**:
-- **COAD**: data from ICGC DCC portal on colorectal adenocarcinoma, contains donor and sample codes, MSI status, processed VCF with all variants per sample, methylation info for MLH1 gene; requires downloading data from ICGC portal, instructions in corresponding README file.
-- **STAD**: data from ICGC DCC portal on stomach adenocarcinoma, contains donor and sample codes, MSI status, processed VCF with all variants per sample, methylation info for MLH1 gene; requires downloading data from ICGC portal, instructions in corresponding README file.
+- **COAD**: data from ICGC DCC portal on colorectal adenocarcinoma, contains donor and sample codes, MSI status, VCF with all variants per sample; requires downloading data from ICGC portal, instructions in corresponding README file.
+- **STAD**: data from ICGC DCC portal on stomach adenocarcinoma, contains donor and sample codes, MSI status, VCF with all variants per sample; requires downloading data from ICGC portal, instructions in corresponding README file.
 - **profiles_and_decomposition.RData** - contains mutation count matrices, signatures, and decomposition over these signatures.
 All this data is publicly available from [ICGC](http://dcc.icgc.org) and [TCGA CE](http://genomeportal.stanford.edu/pan-tcga).
+- requires downloading the meta-VCF with precise description of all the mutations in ICGC data, available [here](https://dcc.icgc.org/releases/current/Summary) under **simple_somatic_mutation.aggregated.vcf.gz**.
 
 **plotting_functions**: contains some codes for signature/profile plotting
 
