@@ -28,7 +28,7 @@ source('plotting functions/scatterpie.R')
 library(tsne)
 library(NMF)
 library(devtools)
-devtools::install_github("mg14/mg14") # for plotting purposes
+#devtools::install_github("mg14/mg14") # for plotting purposes
 library(mg14)
 library(ggplot2)
 library(reshape2)
@@ -414,27 +414,15 @@ p1 <- plot_decomposition(decomposition,mm,intnames=intersect(mmr.ucsc,rownames(C
 multiplot(p1,p2)
 ```
 
-Association with MSI status: calculate P-values for signature contributions, absolute number of mutations assigned to various signatures, and amount if 1bp indels compared with MSI status.
+Association with MSI status: calculate P-values for relative signature contributions compared with MSI status.
 
 ```{r, warning=F}
-clean_decompositions <- decomposition
-clean_decompositions[clean_decompositions<0.05] <- 0 # Omit the contributions smaller that 5% - accuracy of decomposition is not perfect, and these numbers will spoil the analysis for highly mutated samples
-new.cont.mat = t(clean_decompositions)
-for (y in colnames(new.cont.mat))
-  new.cont.mat[,y] = new.cont.mat[,y] * rowSums(mm)[y]
 pvals <- NULL
 for (i in 1:8)
 {
-  pvals <- c(pvals, wilcox.test(clean_decompositions[mmr.ucsc,i], clean_decompositions[setdiff(rownames(mm),mmr.ucsc),i], paired=F, alternative='greater')$p.value)
+  pvals <- c(pvals, wilcox.test(decomposition[mmr.ucsc,i], decomposition[setdiff(rownames(mm),mmr.ucsc),i], paired=F,alternative='greater')$p.value)
 }
-for (i in 1:8)
-{
-  pvals <- c(pvals, wilcox.test(new.cont.mat[i,mmr.ucsc], new.cont.mat[i,setdiff(rownames(mm),mmr.ucsc)], paired=F, alternative='greater')$p.value)
-}
-names(pvals) = rep(colnames(clean_decompositions),2)
-pvals <- c(pvals,
-           wilcox.test(rowSums(mm[mmr.ucsc,97:104]), rowSums(mm[setdiff(rownames(mm),mmr.ucsc),97:104]), paired=F, alternative='greater')$p.value)
-names(pvals)[17] <- 'indels'
+names(pvals) = colnames(decomposition)
 print(p.adjust(pvals,method = 'bonf')) # Take 0.01 as significance threshold (>10 tests)
 ```
 
@@ -447,21 +435,19 @@ mmr.type <- sapply(rownames(mm), function(x) {
   else return("MSS")
 })
 roc(response = factor(mmr.type), predictor = decomposition[,5])
-roc(response = factor(mmr.type), predictor = (rowSums(mm[,97:104])))
 ci(response = factor(mmr.type), predictor = decomposition[,5])
-ci(response = factor(mmr.type), predictor = (rowSums(mm[,97:104])))
 ```
 
 Boxplots for signature MMR-1, MMR-2, MMR-3 contribution vs MSI status:
 
 ```{r, warning=F, echo=F, results='hide'}
-df = data.frame(sample = rownames(mm), mmr.type, decomposition[,5:7])
-colnames(df)[3:5] = colnames(decomposition)[5:7]
+df = data.frame(sample = rownames(mm), mmr.type, decomposition[,c(5:7)])
+colnames(df)[3:5] = colnames(decomposition)[c(5:7)]
 df = melt(df)
 ```
 ```{r,fig.width=6, fig.height=3, echo=F, warning=F}
 p1 <- ggplot(df, aes(x=mmr.type,y=value,fill=variable)) + geom_boxplot(width=0.4,size=0.1,outlier.size=0.5) +
-  facet_grid(. ~ variable) + scale_fill_manual(values=col[5:7]) +
+  facet_grid(. ~ variable) + scale_fill_manual(values=col[c(5:7)]) +
   ylab("Relative contribution") + xlab("") + guides(fill=F) + theme_bw() +
   theme(text = element_text(family='ArialMT'),
         strip.text.x = element_text(size=16),
@@ -474,12 +460,18 @@ p1 <- ggplot(df, aes(x=mmr.type,y=value,fill=variable)) + geom_boxplot(width=0.4
 p1
 ```
 
-Boxplot for 1-bp indels vs MSI status:
+As we can see from the signature plot, all indels are coming with MMR-1; to confirm it, plot the absolute contribution of MMR signatures vs the number of indels:
 
 ```{r, warning=F, echo=F, fig.width=4, fig.height=2}
-df = data.frame(indels = rowSums(mm[,97:104]), sample = rownames(mm), mmr.type)
-p <- ggplot(df, aes(x=mmr.type,y=indels)) + geom_boxplot(width=0.4, size = 0.1, outlier.size = 0.5) + theme_bw() +
-  ylab("Number of \n 1 bp indels") + xlab("") + guides(fill=F) +
+new.cont.mat <- t(decomposition)
+for (i in 1:ncol(new.cont.mat))
+  new.cont.mat[,i] <- new.cont.mat[,i] * rowSums(mm)[i]
+df = data.frame(sample=rownames(mm),ind=rowSums(mm[,97:104]),mmr1=new.cont.mat[5,],mmr2=new.cont.mat[6,],mmr3=new.cont.mat[7,])
+df <- melt(df, id=c('sample','ind'))
+p <- ggplot() + geom_point(data = df[df$variable=='mmr3',], aes(x=ind,y=value), col=col[7],size=0.5) +
+  geom_point(data = df[df$variable=='mmr2',], aes(x=ind,y=value), col=col[6],size=0.5) + 
+  geom_point(data = df[df$variable=='mmr1',], aes(x=ind,y=value), col=col[5],size=0.5) +
+  theme_bw() +
   theme(text = element_text(family='ArialMT'),
         strip.text.x = element_text(size=16),
         axis.title.y = element_text(size=16),
@@ -487,9 +479,32 @@ p <- ggplot(df, aes(x=mmr.type,y=indels)) + geom_boxplot(width=0.4, size = 0.1, 
         axis.text.y = element_text(size=10),
         panel.grid = element_blank(),
         panel.border = element_rect(size = 0.1),
-        strip.background = element_blank())
+        strip.background = element_blank()) 
+  #xlab('Number of 1 bp indels') + ylab('Number of mutations assigned to a signature') + 
 p
 ```
+
+To see the unusual contribution of Clock-1 signature, plot the average fold change (log scale) in the number of mutations assigned to different signatures in MSI samples and MSS samples:
+
+```{r, warning=F, echo=F, fig.width=8, fig.height=2}
+df = data.frame(sigs = colnames(decomposition), val=log10(rowMeans(new.cont.mat[,mmr.ucsc]) / rowMeans(new.cont.mat[,setdiff(rownames(mm),mmr.ucsc)])))
+p <- ggplot(data=df, aes(x=factor(sigs,levels=rev(colnames(decomposition))),y=val)) + 
+  geom_bar(stat='identity', fill=rev(col)[c(6,1:5,7:8)]) + 
+  coord_flip() + 
+  theme_bw() +
+  theme(text = element_text(family='ArialMT'),
+        strip.text.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        panel.grid = element_blank(),
+        panel.border = element_rect(size = 0.1),
+        strip.background = element_blank()) +
+  ylab('no. mutations in MSI / no. mutations in MSS') + xlab('Signatures') +
+  scale_y_continuous(breaks=c(0,1,2),labels=c(1,10,100))
+p
+```
+
 
 Relative contributions for MMR deficient samples:
 ```{r, warning=F, echo=F, fig.width=10, fig.height=6}
