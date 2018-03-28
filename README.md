@@ -28,7 +28,8 @@ All this data is publicly available from [ICGC](http://dcc.icgc.org) and [TCGA C
 
 Session info with package versions for running the scripts:
 
-`R version 3.4.4 (2018-03-15)
+```
+R version 3.4.4 (2018-03-15)
 Platform: x86_64-apple-darwin15.6.0 (64-bit)
 Running under: OS X El Capitan 10.11.6
 
@@ -60,7 +61,8 @@ loaded via a namespace (and not attached):
 [25] lazyeval_0.2.1           magrittr_1.5             memoise_1.1.0            doParallel_1.0.11        tools_3.4.4              gridBase_0.4-7           stringr_1.3.0            munsell_0.4.3           
 [33] AnnotationDbi_1.38.2     bindrcpp_0.2             compiler_3.4.4           rlang_0.2.0              grid_3.4.4               RCurl_1.95-4.10          iterators_1.0.9          bitops_1.0-6            
 [41] gtable_0.2.0             codetools_0.2-15         DBI_0.8                  R6_2.2.2                 GenomicAlignments_1.12.2 knitr_1.20               bit_1.1-12               bindr_0.1.1             
-[49] stringi_1.1.7            Rcpp_0.12.16         `   
+[49] stringi_1.1.7            Rcpp_0.12.16         
+```
 
 In case of any questions or enquiries, please contact Nadezda Volkova (nvolkova@ebi.ac.uk).
 
