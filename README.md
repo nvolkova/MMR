@@ -1,7 +1,7 @@
 # MMR
 Mismatch repair signature analysis in *C. elegans* and ICGC colorectal and stomach cancer data for [Meier, Volkova et al. 2017](https://www.biorxiv.org/content/biorxiv/early/2017/06/13/149153.full.pdf) (subm.).
 
-***C. elegans* data**: contains .RData files with count and design matrices for MMR experiment on C. elegans, raw data available at the NCBI Sequence Read Archive [SRA](http://www.ncbi.nlm.nih.gov/sra) under accession number SRP020555. Requires *C. elegans* WB235cel genome, instructions in corresponding README file.
+***C. elegans* data**: contains .RData files with count and design matrices for MMR experiment on C. elegans. Raw sequencing data are available through the [European Nucleotide Archive](https://www.ebi.ac.uk/ena) ENA Study Accession Numbers ERP000975 and ERP004086 as detailed in Suppl. Table 1 of the paper. Requires *C. elegans* WB235cel genome, instructions in corresponding README file.
 
 **ICGC data**:
 - **COAD**: data from ICGC DCC portal on colorectal adenocarcinoma, contains donor and sample codes, MSI status, VCF with all variants per sample; requires downloading data from ICGC portal, instructions in corresponding README file.
